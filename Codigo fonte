@@ -1,0 +1,662 @@
+import javafx.application.Application;
+import javafx.geometry.Bounds;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
+import javafx.scene.Node;
+import javafx.scene.Scene;
+import javafx.scene.control.*;
+import javafx.scene.layout.*;
+import javafx.scene.paint.Color;
+import javafx.scene.shape.Circle;
+import javafx.scene.text.Font;
+import javafx.stage.Stage;
+import javafx.util.Duration;
+import javafx.animation.TranslateTransition;
+import javafx.scene.control.cell.PropertyValueFactory;
+import javafx.stage.Modality;
+import java.util.*;
+
+public class Main extends Application {
+
+
+    private TextArea inputArea;
+private Button loadBtn;
+private Button nextBtn;
+private Button resetBtn;
+private VBox root;
+private HBox layout;
+private StackPane stack;
+
+
+    private static final double BOX_WIDTH = 200;
+    private static final double BOX_HEIGHT = 100;
+    private static final double SIGNALS_GAP = 10;
+    private static final double SIGNAL_SPACING = 8;
+
+    private int accumulator = 0;
+    private int pc = 0;
+    private final int[] memory = new int[16];
+    private final List<String> programLines = new ArrayList<>();
+    private Label outputLabel;
+    private Label displayOutput;
+    private VBox busVisual;
+    private Pane animationLayer;
+
+    private VBox pcBox, remBox, ramBox, riBox, accBox, aluBox, rbBox, outBox, ctrlBox;
+    private boolean darkMode = false;
+    private boolean halted = false;
+
+    private final List<HBox> allSignalNodes = new ArrayList<>();
+
+    private enum Mode { DECIMAL }
+    private Mode currentMode = Mode.DECIMAL;
+
+    private int step = 0;
+    private String currentInstruction = "";
+    private int operand = 0;
+
+    private void showMemoryTable() {
+    TableView<MemoryEntry> table = new TableView<>();
+
+    TableColumn<MemoryEntry, String> colHex = new TableColumn<>("End. (Hex)");
+    colHex.setCellValueFactory(new PropertyValueFactory<>("addressHex"));
+
+    TableColumn<MemoryEntry, String> colBin = new TableColumn<>("End. (Bin)");
+    colBin.setCellValueFactory(new PropertyValueFactory<>("addressBin"));
+
+    TableColumn<MemoryEntry, String> colContent = new TableColumn<>("Conteúdo");
+    colContent.setCellValueFactory(new PropertyValueFactory<>("content"));
+
+    TableColumn<MemoryEntry, String> colContentBin = new TableColumn<>("Conteúdo (Bin)");
+    colContentBin.setCellValueFactory(new PropertyValueFactory<>("contentBin"));
+
+    table.getColumns().addAll(colHex, colContent, colBin, colContentBin);
+
+
+    for (int i = 0; i < 16; i++) {
+       String hex = String.format("%XH", i);
+
+        String bin = String.format("%4s", Integer.toBinaryString(i)).replace(' ', '0');
+        int value = memory[i];
+
+        String content;
+        String contentBin;
+
+        if (i < programLines.size()) {
+            content = programLines.get(i);
+            contentBin = encodeInstructionToBinary(content);
+        } else if (value != 0) {
+           content = String.format("%02XH", value);
+
+
+            contentBin = String.format("%08d", Integer.parseInt(Integer.toBinaryString(value & 0xFF)));
+        } else {
+            content = "";
+            contentBin = "";
+        }
+
+        table.getItems().add(new MemoryEntry(hex, bin, content, contentBin));
+    }
+
+    Stage dialog = new Stage();
+    dialog.initModality(Modality.APPLICATION_MODAL);
+    dialog.setTitle("Tabela de Memória e Instruções");
+
+    table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+table.setPrefHeight(500);
+table.setPrefWidth(700);
+
+VBox box = new VBox(table);
+box.setPadding(new Insets(10));
+Scene scene = new Scene(box);
+
+    dialog.setScene(scene);
+    dialog.show();
+}
+
+private String encodeInstructionToBinary(String line) {
+    Map<String, String> opcodes = Map.of(
+            "LDA", "0000",
+            "ADD", "0001",
+            "SUB", "0010",
+            "OUT", "1110",
+            "HLT", "1111"
+    );
+    String[] parts = line.split(" ");
+    String instr = parts[0];
+    String addr = (parts.length > 1) ? parts[1].replace("H", "") : "0000"; 
+
+    String opcode = opcodes.getOrDefault(instr, "????");
+    String operand;
+
+    if (instr.equals("OUT") || instr.equals("HLT")) {
+        operand = "XXXX";
+    } else {
+        int value = Integer.parseInt(addr, 16);
+        operand = String.format("%4s", Integer.toBinaryString(value)).replace(' ', '0');
+    }
+    return opcode + " " + operand;
+}
+
+
+    public class MemoryEntry {
+    private final String addressHex;
+    private final String addressBin;
+    private final String content;
+    private final String contentBin;
+
+public MemoryEntry(String addressHex, String addressBin, String content, String contentBin) {
+        this.addressHex = addressHex;
+        this.addressBin = addressBin;
+        this.content = content;
+        this.contentBin = contentBin;
+    }
+
+    public String getAddressHex() { return addressHex; }
+    public String getAddressBin() { return addressBin; }
+    public String getContent() { return content; }
+    public String getContentBin() { return contentBin; }
+}
+
+    private VBox createSquareBox(String title) {
+        VBox box = new VBox();
+        box.setPrefSize(BOX_WIDTH, BOX_HEIGHT);
+        box.setAlignment(Pos.TOP_CENTER);
+        box.setPadding(new Insets(10));
+        box.setStyle("-fx-border-color: #90A4AE; -fx-border-width: 2; -fx-background-color: #F9FAFB; " +
+                "-fx-effect: dropshadow(three-pass-box, rgba(0,0,0,0.1), 10, 0, 4, 4);");
+
+        Label titleLabel = new Label(title);
+        titleLabel.setFont(Font.font("Segoe UI", 16));
+        titleLabel.setTextFill(Color.web("#1A237E"));
+        box.getChildren().add(titleLabel);
+
+        return box;
+    }
+
+    private HBox createSignalWithLED(String signal) {
+        HBox box = new HBox(5);
+        Circle led = new Circle(6, Color.LIGHTGRAY);
+        led.setStroke(Color.GRAY);
+        led.setStrokeWidth(0.8);
+        Label label = new Label(signal.startsWith("/") ? overline(signal.substring(1)) : signal);
+        label.setFont(Font.font("JetBrains Mono", 12));
+        box.getChildren().addAll(led, label);
+        box.setUserData(signal);
+        return box;
+    }
+
+    private String overline(String s) {
+        return s.chars().mapToObj(c -> (char) c + "\u0305").reduce("", String::concat);
+    }
+
+    private void resetAll(TextArea inputArea) {
+    pc = 0;
+    accumulator = 0;
+    step = 0;
+    programLines.clear();
+    Arrays.fill(memory, 0);
+    displayOutput.setText("0");
+    outputLabel.setText("Valor: 0");
+    inputArea.clear();
+
+   
+    for (HBox box : allSignalNodes) {
+        Circle led = (Circle) box.getChildren().get(0);
+        led.setFill(Color.LIGHTGRAY);
+    }
+
+    
+    animationLayer.getChildren().clear();
+}
+
+    private VBox createSignalsBoxVertical(String... signals) {
+        VBox signalsBox = new VBox(5);
+        signalsBox.setAlignment(Pos.CENTER_LEFT);
+        for (String signal : signals) {
+            HBox signalBox = createSignalWithLED(signal);
+            signalsBox.getChildren().add(signalBox);
+            allSignalNodes.add(signalBox);
+        }
+        return signalsBox;
+    }
+
+    private HBox createComponentWithSignals(String title, boolean signalsLeft, String... signals) {
+        VBox square = createSquareBox(title);
+        VBox signalsBox = createSignalsBoxVertical(signals);
+
+        HBox container = new HBox(SIGNALS_GAP);
+        container.setAlignment(Pos.CENTER_LEFT);
+
+        if (signalsLeft) {
+            container.getChildren().addAll(signalsBox, square);
+        } else {
+            container.getChildren().addAll(square, signalsBox);
+        }
+
+        return container;
+    }
+
+    private VBox createControllerSequentialBox() {
+        VBox square = createSquareBox("Controlador/Sequenciador");
+
+        HBox bottomSignals = createSignalsBoxHorizontal(
+                "Cp", "Ep", "/Lm", "/CE", "/Li", "/Ei", "/La", "Ea", "Su", "Eu", "/Lb", "/Lo"
+        );
+
+        VBox container = new VBox(8);
+        container.setAlignment(Pos.TOP_CENTER);
+        container.getChildren().addAll(square, bottomSignals);
+
+        return container;
+    }
+
+    private HBox createSignalsBoxHorizontal(String... signals) {
+        HBox signalsBox = new HBox(SIGNAL_SPACING);
+        signalsBox.setAlignment(Pos.CENTER);
+        for (String signal : signals) {
+            HBox signalBox = createSignalWithLED(signal);
+            signalsBox.getChildren().add(signalBox);
+            allSignalNodes.add(signalBox);
+        }
+        return signalsBox;
+    }
+
+    private HBox createDisplayBox() {
+        VBox box = createSquareBox("Display");
+        displayOutput = new Label("0");
+        displayOutput.setFont(Font.font("Courier New", 24));
+        displayOutput.setTextFill(Color.web("#00FF00"));
+        displayOutput.setStyle("-fx-background-color: black; -fx-padding: 10;");
+        box.getChildren().add(displayOutput);
+        return new HBox(box);
+    }
+
+    private TranslateTransition createDataFlowAnimation(Node from, Node to) {
+    Bounds fromBounds = from.localToScene(from.getBoundsInLocal());
+    Bounds toBounds = to.localToScene(to.getBoundsInLocal());
+
+  
+    Bounds sceneBounds = animationLayer.localToScene(animationLayer.getBoundsInLocal());
+    double offsetX = sceneBounds.getMinX();
+    double offsetY = sceneBounds.getMinY();
+
+    double startX = (fromBounds.getMinX() + fromBounds.getMaxX()) / 2 - offsetX;
+    double startY = (fromBounds.getMinY() + fromBounds.getMaxY()) / 2 - offsetY;
+
+    double endX = (toBounds.getMinX() + toBounds.getMaxX()) / 2 - offsetX;
+    double endY = (toBounds.getMinY() + toBounds.getMaxY()) / 2 - offsetY;
+
+    Circle dot = new Circle(6, Color.DODGERBLUE);
+    dot.setLayoutX(startX);
+    dot.setLayoutY(startY);
+
+    animationLayer.getChildren().add(dot);
+
+    TranslateTransition tt = new TranslateTransition(Duration.millis(800), dot);
+    tt.setToX(endX - startX);
+    tt.setToY(endY - startY);
+    return tt;
+}
+
+    private void playSequentialAnimations(List<TranslateTransition> list, int index) {
+        if (index >= list.size()) return;
+        TranslateTransition current = list.get(index);
+        current.setOnFinished(e -> {
+            animationLayer.getChildren().remove(current.getNode());
+            playSequentialAnimations(list, index + 1);
+        });
+        current.play();
+    }
+
+    
+
+private void updateSignalTextColors(boolean darkMode) {
+    for (HBox signalBox : allSignalNodes) {
+        Label label = (Label) signalBox.getChildren().get(1);
+        label.setTextFill(darkMode ? Color.LIGHTGRAY : Color.BLACK);
+    }
+}
+
+
+private void highlightSignals(String... activeSignals) {
+    Set<String> activeSet = new HashSet<>(Arrays.asList(activeSignals));
+    for (HBox box : allSignalNodes) {
+        String sig = (String) box.getUserData();
+        Circle led = (Circle) box.getChildren().get(0);
+        led.setFill(activeSet.contains(sig) ? Color.web("#00E676") : Color.LIGHTGRAY);
+    }
+
+    List<TranslateTransition> animations = new ArrayList<>();
+
+    if (step == 0) {
+        animations.add(createDataFlowAnimation(pcBox, busVisual));
+        animations.add(createDataFlowAnimation(busVisual, remBox));
+        animations.add(createDataFlowAnimation(remBox, ramBox));
+    } else if (step == 1) {
+        
+    } else if (step == 2) {
+        animations.add(createDataFlowAnimation(ramBox, busVisual));
+        animations.add(createDataFlowAnimation(busVisual, riBox));
+        animations.add(createDataFlowAnimation(riBox, ctrlBox)); 
+    } else if (step == 3) {
+        switch (currentInstruction) {
+            case "LDA", "ADD", "SUB" -> {
+                animations.add(createDataFlowAnimation(riBox, busVisual));
+                animations.add(createDataFlowAnimation(busVisual, remBox));
+                animations.add(createDataFlowAnimation(remBox, ramBox));
+            }
+            case "OUT" -> {
+                animations.add(createDataFlowAnimation(accBox, busVisual));
+                animations.add(createDataFlowAnimation(busVisual, outBox));
+            }
+        }
+    } else if (step == 4) {
+        switch (currentInstruction) {
+            case "LDA" -> {
+                animations.add(createDataFlowAnimation(ramBox, busVisual));
+                animations.add(createDataFlowAnimation(busVisual, accBox));
+                animations.add(createDataFlowAnimation(accBox, aluBox));
+            }
+            case "ADD", "SUB" -> {
+                animations.add(createDataFlowAnimation(ramBox, busVisual));
+                animations.add(createDataFlowAnimation(busVisual, rbBox));
+                animations.add(createDataFlowAnimation(rbBox, aluBox));
+            }
+        }
+    } else if (step == 5) {
+        if (currentInstruction.equals("ADD") || currentInstruction.equals("SUB")) {
+            animations.add(createDataFlowAnimation(aluBox, busVisual));
+            animations.add(createDataFlowAnimation(busVisual, accBox));
+            animations.add(createDataFlowAnimation(accBox, aluBox));
+        }
+    }
+
+    if (!animations.isEmpty()) {
+        playSequentialAnimations(animations, 0);
+    }
+}
+
+private void executeNextStep() {
+    if (halted) return;
+
+    String[] T1 = {"Ep", "/Lm"};
+    String[] T2 = {"Cp"};
+    String[] T3 = {"/CE", "/Li"};
+    String[] T4 = {};
+    String[] T5 = {};
+    String[] T6 = {};
+
+    if (step == 0) {
+        highlightSignals(T1);
+    } else if (step == 1) {
+        highlightSignals(T2);
+   } else if (step == 2) {
+    highlightSignals(T3);
+    String[] parts = programLines.get(pc).split(" ");
+    currentInstruction = parts[0];
+    if (parts.length > 1) {
+        String raw = parts[1].replace("H", "");
+        operand = Integer.parseInt(raw, 16);
+    } else {
+        operand = 0; 
+    }
+
+    } else if (step == 3) {
+        switch (currentInstruction) {
+            case "LDA", "ADD", "SUB" -> T4 = new String[]{"/Ei", "/Lm"};
+            case "OUT" -> T4 = new String[]{"Ea", "/Lo"};
+        }
+        highlightSignals(T4);
+    } else if (step == 4) {
+        switch (currentInstruction) {
+            case "LDA" -> T5 = new String[]{"/CE", "/La"};
+            case "ADD", "SUB" -> T5 = new String[]{"/CE", "/Lb"};
+        }
+        highlightSignals(T5);
+    } else if (step == 5) {
+        if (currentInstruction.equals("ADD") || currentInstruction.equals("SUB")) {
+            T6 = new String[]{"Eu", "/La"};
+        }
+        highlightSignals(T6);
+
+        if (currentInstruction.equals("OUT")) {
+            displayOutput.setText(String.valueOf(accumulator));
+        }
+
+        if (currentInstruction.equals("HLT")) {
+            highlightSignals(); 
+            outputLabel.setText("FIM DE PROGRAMA");
+            halted = true;
+            return;
+        }
+
+        executeInstruction();
+        pc++;
+    }
+
+    step = (step + 1) % 6;
+}
+
+private void loadProgram(String inputText) {
+    pc = 0;
+    accumulator = 0;
+    step = 0;
+    halted = false;
+    Arrays.fill(memory, 0);
+    programLines.clear();
+    outputLabel.setText("Valor: 0");
+    displayOutput.setText("0");
+
+    String expression = inputText.trim();
+    if (expression.isEmpty()) return;
+
+    try {
+        String[] tokens = expression.split(" ");
+        List<Integer> numbers = new ArrayList<>();
+        List<String> ops = new ArrayList<>();
+
+        for (int i = 0; i < tokens.length; i++) {
+            if (i % 2 == 0) {
+                numbers.add(Integer.parseInt(tokens[i]));
+            } else {
+                ops.add(tokens[i]);
+            }
+        }
+
+        if (numbers.size() < 2 || numbers.size() > 7 || ops.size() != numbers.size() - 1) {
+            throw new IllegalArgumentException();
+        }
+
+    int startAddr = 16 - numbers.size();
+
+for (int i = 0; i < numbers.size(); i++) {
+    memory[startAddr + i] = numbers.get(i);
+}
+
+programLines.add("LDA " + Integer.toHexString(startAddr + 0).toUpperCase() + "H");
+
+for (int i = 1; i < numbers.size(); i++) {
+    String op = ops.get(i - 1);
+    String addr = Integer.toHexString(startAddr + i).toUpperCase() + "H";
+    if (op.equals("+")) {
+        programLines.add("ADD " + addr);
+    } else if (op.equals("-")) {
+        programLines.add("SUB " + addr);
+    }
+}
+
+programLines.add("OUT ");
+programLines.add("HLT ");
+
+    } catch (Exception e) {
+        Alert alert = new Alert(Alert.AlertType.ERROR, "Expressão inválida! Use o formato:\n\n12 + 24 - 5 + 9");
+        alert.showAndWait();
+    }
+    showMemoryTable();
+}
+
+
+private void executeInstruction() {
+        switch (currentInstruction) {
+            case "LDA" -> accumulator = memory[operand];
+            case "ADD" -> accumulator += memory[operand];
+            case "SUB" -> accumulator -= memory[operand];
+            case "OUT" -> displayOutput.setText(String.valueOf(accumulator));
+        }
+        outputLabel.setText("Valor: " + accumulator);
+    }
+
+    @Override
+    public void start(Stage stage) {
+        VBox leftColumn = new VBox(20);
+        leftColumn.setAlignment(Pos.TOP_CENTER);
+
+        pcBox = createSquareBox("Contador de Programa");
+        remBox = createSquareBox("Entrada e REM");
+        ramBox = createSquareBox("RAM 16x8");
+        riBox = createSquareBox("Registrador \nde Instruções");
+        ctrlBox = createControllerSequentialBox();
+
+        leftColumn.getChildren().addAll(
+                wrapWithSignals(pcBox, true, "Cp", "Ep"),
+                wrapWithSignals(remBox, true, "/Lm"),
+                wrapWithSignals(ramBox, true, "/CE"),
+                wrapWithSignals(riBox, true, "/Li", "/Ei"),
+                ctrlBox
+        );
+
+        VBox rightColumn = new VBox(20);
+        rightColumn.setAlignment(Pos.TOP_CENTER);
+
+        accBox = createSquareBox("Acumulador A");
+        aluBox = createSquareBox("Somador/Subtrator");
+        rbBox = createSquareBox("Registrador B");
+        outBox = createSquareBox("Registrador de Saída");
+        HBox display = createDisplayBox();
+
+        rightColumn.getChildren().addAll(
+                wrapWithSignals(accBox, false, "/La", "Ea"),
+                wrapWithSignals(aluBox, false, "Su", "Eu"),
+                wrapWithSignals(rbBox, false, "/Lb"),
+                wrapWithSignals(outBox, false, "/Lo"),
+                display
+        );
+
+        double totalBlocksHeight = 5 * BOX_HEIGHT + 4 * 20 + 40;
+        busVisual = new VBox(10);
+        busVisual.setAlignment(Pos.CENTER);
+        busVisual.setPrefWidth(30);
+        busVisual.setPrefHeight(totalBlocksHeight);
+        busVisual.setStyle("-fx-background-color: transparent; -fx-border-color: black; -fx-border-width: 1;");
+        Label busLabel = new Label("Barramento");
+        busLabel.setRotate(-90);
+        busLabel.setFont(Font.font("Segoe UI", 20));
+        busVisual.getChildren().add(busLabel);
+
+ animationLayer = new Pane(); 
+
+layout = new HBox(60);
+layout.setPadding(new Insets(20));
+layout.setAlignment(Pos.TOP_CENTER);
+
+stack = new StackPane();
+stack.getChildren().addAll(layout, animationLayer);
+
+
+        layout.getChildren().addAll(leftColumn, busVisual, rightColumn);
+
+        ScrollPane scrollPane = new ScrollPane(stack);
+        scrollPane.setFitToWidth(true);
+        scrollPane.setFitToHeight(true);
+
+       inputArea = new TextArea();
+        inputArea.setPrefRowCount(6);
+        inputArea.setStyle("-fx-control-inner-background: #263238; -fx-text-fill: #ECEFF1; " +
+                "-fx-font-family: 'Courier New'; -fx-font-size: 14;");
+
+        resetBtn = new Button("⟲ Reset");
+        resetBtn.setOnAction(e -> resetAll(inputArea));
+
+
+        loadBtn = new Button("🗃 Carregar Programa");
+        loadBtn.setOnAction(e -> loadProgram(inputArea.getText()));
+
+        nextBtn = new Button("▶ Próximo");
+        nextBtn.setOnAction(e -> executeNextStep());
+
+        outputLabel = new Label("Valor: 0");
+        outputLabel.setFont(Font.font("Segoe UI", 18));
+        outputLabel.setTextFill(Color.DARKRED);
+
+        HBox controls = new HBox(10, loadBtn, nextBtn, resetBtn, outputLabel);
+
+        controls.setAlignment(Pos.CENTER);
+        Button darkModeBtn = new Button("🌙 Modo Noturno");
+darkModeBtn.setOnAction(e -> {
+    darkMode = !darkMode;
+    if (darkMode) {
+        applyDarkMode();
+        darkModeBtn.setText("☀️ Modo Claro");
+    } else {
+        applyLightMode();
+        darkModeBtn.setText("🌙 Modo Noturno");
+    }
+});
+
+HBox topBar = new HBox(darkModeBtn);
+topBar.setAlignment(Pos.CENTER_RIGHT);
+topBar.setPadding(new Insets(5, 10, 5, 10));
+
+       root = new VBox(topBar, scrollPane, new Label("Entrada do Programa:"), inputArea, controls);
+
+        root.setPadding(new Insets(10));
+
+        Scene scene = new Scene(root, 1200, 800);
+        stage.setTitle("SAP1.0 - Emulador Visual");
+        stage.setScene(scene);
+        stage.show();
+    }
+private void applyDarkMode() {
+    layout.setStyle("-fx-background-color: #212121;");
+stack.setStyle("-fx-background-color: #212121;");
+    updateSignalTextColors(true);
+    root.setStyle("-fx-background-color: #121212;");
+    displayOutput.setTextFill(Color.web("#00FF00"));
+    outputLabel.setTextFill(Color.web("#00FF00"));
+    inputArea.setStyle("-fx-control-inner-background: #263238; -fx-text-fill: #ECEFF1; -fx-font-family: 'Courier New'; -fx-font-size: 14;");
+    loadBtn.setStyle("-fx-background-color: #333333; -fx-text-fill: #EEEEEE;");
+    nextBtn.setStyle("-fx-background-color: #333333; -fx-text-fill: #EEEEEE;");
+    resetBtn.setStyle("-fx-background-color: #333333; -fx-text-fill: #EEEEEE;");
+}
+
+private void applyLightMode() {
+    layout.setStyle("-fx-background-color: white;");
+stack.setStyle("-fx-background-color: white;");
+    updateSignalTextColors(false);
+    root.setStyle("-fx-background-color: #FFFFFF;");
+    displayOutput.setTextFill(Color.web("#00FF00"));
+    outputLabel.setTextFill(Color.DARKRED);
+    inputArea.setStyle("-fx-control-inner-background: white; -fx-text-fill: black; -fx-font-family: 'Courier New'; -fx-font-size: 14;");
+    loadBtn.setStyle("");
+    nextBtn.setStyle("");
+    resetBtn.setStyle("");
+}
+
+
+    private HBox wrapWithSignals(VBox box, boolean signalsLeft, String... signals) {
+        VBox signalsBox = createSignalsBoxVertical(signals);
+        HBox hbox = new HBox(SIGNALS_GAP);
+        hbox.setAlignment(Pos.CENTER_LEFT);
+        if (signalsLeft) {
+            hbox.getChildren().addAll(signalsBox, box);
+        } else {
+            hbox.getChildren().addAll(box, signalsBox);
+        }
+        return hbox;
+    }
+
+    public static void main(String[] args) {
+        launch();
+    }
+}
